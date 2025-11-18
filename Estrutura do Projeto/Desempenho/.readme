@@ -1,1 +1,276 @@
+Perfeito! Aqui está o **README completo em formato Markdown**, pronto para GitHub.
+Você pode simplesmente copiar e colar no arquivo **README.md**.
+
+---
+
+# 📘 README – Códigos MATLAB de Desempenho Aeronáutico
+
+**Autor:** Wendler Paiva Reis
+**Co-Autor:** ChatGPT – 2025
+**Base científica:** *Anderson, Roskam, Raymer, McCormick, FAR-23/25*
+
+---
+
+# ✈️ 1. Objetivo do Repositório
+
+Este repositório reúne um conjunto de **scripts MATLAB completos e modulares** para análise de desempenho de aeronaves e aeromodelos.
+Inclui desde modelos básicos até modelos avançados fundamentados nas principais literaturas aeronáuticas.
+
+Os códigos geram automaticamente:
+
+* Envelope de voo completo
+* Distância de decolagem × peso (incluindo vento, altitude, pista molhada, inclinação)
+* Razão de subida (ROC) × altitude
+* Polares (CD(CL), CD(CL, M, Re))
+* Cálculo iterativo de MTOW (Roskam)
+* Análise de CG e envelope de estabilidade
+* Curvas de potência necessária × potência disponível
+* Efeito da altitude sobre empuxo T(V,h)
+
+---
+
+# 📚 2. Bibliografia Fundamentada
+
+Este repositório segue rigorosamente as equações de:
+
+## **2.1 John D. Anderson Jr.**
+
+📘 *Aircraft Performance & Design*
+
+* Aceleração no solo
+* Modelos de decolagem
+* Razão de subida
+* Altitude de cruzeiro e máxima ROC
+* Wing loading vs power loading
+
+## **2.2 Jan Roskam**
+
+📘 *Airplane Design Series (I–VIII)*
+
+* Método iterativo para MTOW
+* Frações de missão
+* Modelos empíricos para peso vazio
+* Requisitos FAR-23/25
+* Estol, takeoff parameter, climb parameter
+
+## **2.3 Daniel Raymer**
+
+📘 *Aircraft Design – A Conceptual Approach*
+
+* Correções de empuxo com altitude
+* Efeito de pista molhada
+* Modelos simplificados de CD0
+* Estimativas preliminares de geometria
+
+## **2.4 McCormick**
+
+📘 *Aerodynamics, Aeronautics, and Flight Mechanics*
+
+* Polar teórica (CD0 + k·CL²)
+* Arrasto induzido e eficiência Oswald
+* Performance de subida
+
+## **2.5 FAA – FAR-23 / FAR-25**
+
+* Gradientes mínimos de subida
+* Regras para decolagem/aterissagem
+* Correções atmosféricas
+
+---
+
+# 🧱 3. Estrutura do Repositório
+
+```
+/performance-aircraft-codes
+│
+├── README.md
+│
+├── main_run.m               % script principal
+├── inputs.m                 % todos os parâmetros ajustáveis
+│
+├── atm_model.m              % modelo ISA completo
+├── thrust_model.m           % T(V,h) – turbofan, turboélice, elétrico
+├── polar_model.m            % CD(CL), polares 2D/3D experimentais
+├── takeoff_run.m            % distância de decolagem
+├── climb_rate.m             % ROC(altitude, peso)
+├── mtow_roskam.m            % cálculo iterativo do MTOW
+├── cg_balance.m             % cálculo do CG e envelope
+│
+└── plot_functions.m         % todos os gráficos e visualizações
+```
+
+**Todos os códigos possuem inputs configuráveis.**
+
+---
+
+# 🛠️ 4. Como Usar
+
+### Passo 1 — Configurar parâmetros
+
+Modifique **inputs.m**:
+
+```matlab
+S       = 1.7; 
+AR      = 7.2;
+CLmax   = 1.8;
+T0      = 1500;
+W0      = 12*9.81;
+...
+```
+
+---
+
+### Passo 2 — Rodar o algoritmo principal
+
+```matlab
+main_run
+```
+
+---
+
+### Passo 3 — Visualizar os gráficos gerados automaticamente
+
+* Distância de decolagem × peso
+* Razão de subida × altitude
+* Empuxo disponível × necessário
+* Envelope de voo
+* CG × Envelope estrutural
+* MTOW × iteração
+
+---
+
+# 📈 5. Gráficos Gerados
+
+### ✔ Envelope de voo
+
+* Potência necessária × velocidade
+* Potência disponível (T(V,h))
+* Velocidade mínima e máxima
+* Altitude máxima de cruzeiro
+
+### ✔ Decolagem
+
+* Distância × peso
+* Efeito da inclinação da pista
+* Efeito de pista molhada
+* Efeito do vento (headwind/tailwind)
+
+### ✔ Subida
+
+* ROC(altitude, peso)
+* Superfície ROC(h,W)
+* Altitude de serviço e teto absoluto
+
+### ✔ Polar aerodinâmica
+
+* CD(CL) analítica
+* CD(CL, Mach, Re) experimental
+* Ajuste de curva (curve fitting)
+
+### ✔ MTOW
+
+* Convergência iterativa
+* Restrições: estol, pista, subida
+
+### ✔ Centro de gravidade
+
+* CG(x,W)
+* Faixa segura + limite de estabilidade
+
+---
+
+# 🧪 6. Validação e Análise de Erros
+
+### **6.1 Fontes mais comuns de erro**
+
+* Unidade incorreta (kg vs N)
+* Densidade incorreta pela altitude
+* CLmax muito alto (arrasto irrealista)
+* Modelo de turboélice usado em turbofan
+* Discretização grosseira no integrador da decolagem
+* Dados sujos em polares experimentais
+
+---
+
+### **6.2 Como validar fisicamente**
+
+#### **a) Teste com aeronaves reais**
+
+Compare com performance publicada de:
+
+* Cessna 172
+* SR-22
+* T-6 Texan II
+* Embraer Ipanema 202
+* Aeromodelos RC de 5–10 kg
+
+#### **b) Sanidade física**
+
+* Estol > 12 m/s é típico
+* ROC cai com altitude
+* Distância de decolagem cresce com MTOW
+* CD(CL) deve ser parabólico
+* CG deve ficar **entre 20% e 35% MAC** em aviões leves
+
+---
+
+### **6.3 Debug recomendado**
+
+Use comandos:
+
+```matlab
+dbstop if error
+plot(V, Drag)          % verificar arrasto
+plot(t, V_ground)      % curva de aceleração
+surf(H, W, ROC)         % ROC 3D
+```
+
+---
+
+# 🚀 7. Extensões Futuras
+
+* Envelope estrutural (V-n diagram)
+* Compressibilidade (Mach critical, buffet onset)
+* Otimização: mínima distância de decolagem
+* Interação com Simulink para turbinas reais
+* Análise de sensibilidade (Monte Carlo)
+* Interface GUI no MATLAB App Designer
+
+---
+
+# 🤝 8. Contribuições
+
+Modifique, otimize e contribua com novos modelos.
+Sugestões de novas funções são bem-vindas!
+
+Para adicionar um novo módulo:
+
+1. Crie o .m
+2. Registre em `plot_functions.m` se gerar gráfico
+3. Linke em `main_run.m`
+
+---
+
+# 📩 9. Suporte
+
+Se quiser:
+
+* adicionar gráficos novos
+* incluir CFD/simulações
+* converter tudo para Python
+* gerar PDFs automáticos de relatório
+
+É só pedir!
+
+---
+
+Se quiser, posso:
+
+### ✔ Criar **imagens e diagramas estilizados** (fluxogramas, figuras Roskam-like)
+
+### ✔ Criar **README com emojis minimalistas**
+
+### ✔ Criar **versão em inglês** para GitHub internacional
+
+Qual versão você prefere?
 
