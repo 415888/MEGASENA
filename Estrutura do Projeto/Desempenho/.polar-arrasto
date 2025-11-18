@@ -1,0 +1,82 @@
+%% polar_experimental_envelope.m
+% Importa polar experimental (CSV) e integra com envelope V-n
+% Requer: arquivo CSV com colunas CL,CD,Mach,Re (nomes de coluna não sensíveis a maiúsculas)
+% Autor: ChatGPT — versão adaptada para suas necessidades
+
+clc; clear; close all;
+fprintf('=== Polar experimental + Mapa Cd(CL,Mach,Re) + Integração com Envelope V-n ===\n\n');
+
+%% ----------------------- INPUTS DO USUÁRIO -----------------------
+% Arquivo CSV/TXT contendo dados experimentais
+defaultFile = 'polar_tunnel.csv';
+fn = input(sprintf('Caminho do arquivo de polar experimental (press Enter para "%s"): ', defaultFile),'s');
+if isempty(fn)
+    fn = defaultFile;
+end
+
+% Parâmetros aeronave / ambientais
+m = input('Massa da aeronave [kg] (ex: 1200): ');
+S = input('Área da asa S [m^2] (ex: 16.2): ');
+c_mac = input('Mean Aerodynamic Chord (MAC) [m] (para Re) (ex: 1.5): ');
+alt_oper = input('Altitude de operação [m] (ex: 0): ');
+Vmax = input('Velocidade máxima para gráficos [m/s] (ex: 180): ');
+Vmin = input('Velocidade mínima para gráficos [m/s] (ex: 5): ');
+use3D = input('Gerar gráficos 3D/mesh do mapa Cd? (1 sim / 0 não): ');
+
+% Parâmetros de controle de interpolação
+extrapolate_allowed = true;   % permite extrapolação suave
+interp_method = 'linear';     % 'linear' ou 'natural' ou 'nearest'
+
+%% ----------------------- CARREGA DADOS -----------------------
+% Tenta ler com readtable
+try
+    T = readtable(fn);
+catch ME
+    error('Falha ao ler o arquivo "%s". Erro: %s\nVerifique caminho/formato.', fn, ME.message);
+end
+
+% Normaliza nomes de colunas (minúsculas)
+varnames = lower(T.Properties.VariableNames);
+% procura colunas essenciais
+idxCL = find(contains(varnames,'cl'),1);
+idxCD = find(contains(varnames,'cd'),1);
+idxMach = find(contains(varnames,'mach'),1);
+idxRe = find(contains(varnames,'re'),1);
+
+if isempty(idxCL) || isempty(idxCD) || isempty(idxMach) || isempty(idxRe)
+    error('Arquivo deve conter colunas com nomes contendo "CL", "CD", "Mach" e "Re".');
+end
+
+CL_data = T{:, idxCL};
+CD_data = T{:, idxCD};
+Mach_data = T{:, idxMach};
+Re_data = T{:, idxRe};
+
+% Remove NaNs
+valid = ~any(isnan([CL_data, CD_data, Mach_data, Re_data]),2);
+CL_data = CL_data(valid);
+CD_data = CD_data(valid);
+Mach_data = Mach_data(valid);
+Re_data = Re_data(valid);
+
+if numel(CL_data) < 10
+    error('Poucos pontos válidos (%d). Verifique o arquivo de dados.', numel(CL_data));
+end
+
+fprintf('Dados carregados: %d pontos experimentais válidos.\n', numel(CL_data));
+
+%% --------------------- CONSTANTES ATMOSFÉRICAS / ISA ---------------------
+T0 = 288.15; p0 = 101325; L = 0.0065; R = 287; g = 9.81;
+if alt_oper <= 11000
+    T_alt = T0 - L*alt_oper;
+    p_alt = p0 * (T_alt/T0)^(g/(R*L));
+else
+    T_alt = 216.65;
+    p_alt = 22632 * exp(-g*(alt_oper-11000)/(R*T_alt));
+end
+rho_alt = p_alt / (R * T_alt);
+fprintf('Alt=%g m -> rho=%.4f kg/m^3, T=%.2f K\n', alt_oper, rho_alt, T_alt);
+
+%% --------------------- VISCOSIDADE DINÂMICA (SUTHERLAND) ---------------------
+% Sutherland para ar (aprox.)
+mu0 = 1.716e-5; T0s = 273.15; C = 110.4; % mas usamos formul.
