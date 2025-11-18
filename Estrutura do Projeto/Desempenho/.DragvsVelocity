@@ -1,0 +1,145 @@
+%% ===============================================================
+%  PERFORMANCE COMPLETA DE AERONAVE / AEROMODELO
+%  - Arrasto x Velocidade
+%  - Potência Necessária x Potência Disponível
+%  - Razão de Subida (ROC)
+%  - Envelope de voo simplificado
+%  Autor: ChatGPT 2025
+%% ===============================================================
+
+clear; clc; close all;
+
+disp("=== PERFORMANCE AERONAVE / AEROMODELO ===");
+disp("1 - Entrar dados manualmente");
+disp("2 - Usar valores padrão");
+mode = input("Escolha a opção: ");
+
+%% ===========================
+%  INPUTS
+% ===========================
+
+if mode == 1
+    W     = input('Peso total [N]: ');
+    S     = input('Área da asa S [m²]: ');
+    CD0   = input('CD0 (arrasto parasita): ');
+    AR    = input('Alongamento AR: ');
+    e     = input('Eficiência Oswald e (0.7–0.95): ');
+    rho   = input('Densidade do ar [kg/m³]: ');
+    P_av  = input('Potência disponível máxima [W]: ');
+    Vmin  = input('Velocidade mínima analisada [m/s]: ');
+    Vmax  = input('Velocidade máxima analisada [m/s]: ');
+else
+    % Aeromodelo exemplo
+    W     = 55 * 9.81;       % 5.6 kg
+    S     = 0.72;            
+    CD0   = 0.028;           
+    AR    = 6.5;             
+    e     = 0.85;            
+    rho   = 1.225;           
+    P_av  = 850;             % potência motor elétrico/hélice [W]
+    Vmin  = 5; 
+    Vmax  = 40;
+end
+
+%% ===========================
+%  MALHA DE VELOCIDADE
+% ===========================
+
+V = linspace(Vmin, Vmax, 400);
+q = 0.5 * rho .* V.^2;
+
+%% ===========================
+%  Coeficientes aerodinâmicos
+% ===========================
+
+CL = W ./ (q * S);
+CDi = CL.^2 ./ (pi * e * AR);
+CD  = CD0 + CDi;
+D   = q .* S .* CD;
+
+%% ===========================
+%  Potência necessária
+% ===========================
+
+P_req = D .* V;
+P_avail = P_av * ones(size(V));   % potência fixa (elétrico ou hélice simplificada)
+
+%% ===========================
+%  Razão de subida (ROC)
+% ===========================
+
+ROC = (P_avail - P_req) ./ W;    % [m/s]
+ROC(ROC < 0) = 0;                % sem subida quando potência insuficiente
+
+%% ===========================
+%  Velocidades importantes
+% ===========================
+
+% Velocidade de mínimo arrasto
+[~, idx_minD] = min(D);
+V_min_drag = V(idx_minD);
+
+% Velocidade de melhor razão de subida
+[ROC_max, idx_ROC] = max(ROC);
+V_best_ROC = V(idx_ROC);
+
+%% ===========================
+%  GRÁFICOS
+% ===========================
+
+%% FIG 1 – ARRASTO
+figure;
+plot(V, D, 'LineWidth', 2); hold on;
+plot(V_min_drag, D(idx_minD), 'ro', 'MarkerSize', 8);
+grid on;
+xlabel("Velocidade V [m/s]");
+ylabel("Arrasto D [N]");
+title("Arrasto Total × Velocidade");
+legend("D(V)", sprintf("V_{minD} = %.2f m/s", V_min_drag));
+
+%% FIG 2 – POTÊNCIA NECESSÁRIA E DISPONÍVEL
+figure;
+plot(V, P_req/1000, 'LineWidth', 2); hold on;
+plot(V, P_avail/1000, '--', 'LineWidth', 2);
+plot(V_best_ROC, P_req(idx_ROC)/1000, 'ro', 'MarkerSize', 8);
+grid on;
+xlabel("Velocidade V [m/s]");
+ylabel("Potência [kW]");
+title("Potência Necessária × Disponível");
+legend("P_{req}", "P_{avail}", sprintf("V_{melhor ROC} = %.2f m/s", V_best_ROC));
+
+%% FIG 3 – RAZÃO DE SUBIDA
+figure;
+plot(V, ROC, 'LineWidth', 2); hold on;
+plot(V_best_ROC, ROC_max, 'ro', 'MarkerSize', 8);
+grid on;
+xlabel("Velocidade V [m/s]");
+ylabel("ROC [m/s]");
+title("Razão de Subida (ROC × V)");
+legend("ROC(V)", sprintf("Máx ROC = %.2f m/s", ROC_max));
+
+%% FIG 4 – ENVELOPE DE VOO SIMPLIFICADO
+% Baseado em limites aerodinâmicos: stall + potência suficiente
+CL_max = 1.2;  % típico aeromodelo; pode virar input
+V_stall = sqrt(2*W/(rho*S*CL_max));
+
+figure;
+plot(V, ROC, 'LineWidth', 2); hold on;
+xline(V_stall, '--r', 'LineWidth', 2);
+grid on;
+xlabel("Velocidade V [m/s]");
+ylabel("Razão de Subida [m/s]");
+title("Envelope de Voo (limitado por stall e potência)");
+
+text(V_stall+0.5, max(ROC)*0.8, sprintf("V_{stall} = %.2f m/s", V_stall));
+
+%% ===========================
+%  RESULTADOS
+% ===========================
+
+fprintf("\n===== RESULTADOS =====\n");
+fprintf("Velocidade de mínimo arrasto (VminD): %.2f m/s\n", V_min_drag);
+fprintf("Velocidade de melhor ROC: %.2f m/s\n", V_best_ROC);
+fprintf("Máxima razão de subida ROC_max: %.3f m/s\n", ROC_max);
+fprintf("Velocidade de estol (CLmax=%.2f): %.2f m/s\n", CL_max, V_stall);
+
