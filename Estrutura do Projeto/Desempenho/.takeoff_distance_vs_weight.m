@@ -220,16 +220,26 @@ end
 % ISA Helper
 %% ============================================================
 function atm = isa_calc(h)
-    g = 9.80665; R = 287.05;
-    if h <= 11000
-        T = 288.15 - 0.0065*h;
-        p = 101325*(T/288.15)^(g/(R*0.0065));
-    else
-        T = 216.65;
-        p = 22632.06*exp(-g*(h-11000)/(R*T));
-    end
-    atm.T = T;
-    atm.p = p;
-    atm.rho = p/(R*T);
-    atm.a = sqrt(1.4*R*T);
+
+    g = 9.80665;
+    R = 287.05;
+
+    % Prealocação
+    T = zeros(size(h));
+    p = zeros(size(h));
+
+    % Troposfera
+    i1 = h <= 11000;
+    T(i1) = 288.15 - 0.0065*h(i1);
+    p(i1) = 101325 .* (T(i1)/288.15).^(g/(0.0065*R));
+
+    % Estratosfera
+    i2 = h > 11000;
+    T(i2) = 216.65;
+    p(i2) = 22632.06 .* exp(-g.*(h(i2)-11000)./(R*T(i2)));
+
+    atm.T   = T;
+    atm.p   = p;
+    atm.rho = p ./ (R.*T);
+    atm.a   = sqrt(1.4 .* R .* T);
 end
