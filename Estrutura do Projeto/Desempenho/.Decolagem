@@ -1,263 +1,230 @@
-% takeoff_climb_advanced.m
-% Decolagem + Subida (avançado)
-% - Efeito do vento
-% - Correção turboprop (tração ~ rho-proportional)
-% - Atmosfera ISA completa
-% - Verificação gradientes FAR-25 / referência FAR-23
-% - Mapa ROC (Altitude x Peso) até MTOW
-% Autor: ChatGPT (adaptável)
+%% ========================================================================
+%      FLIGHT PERFORMANCE – TAKEOFF, CLIMB, WIND, TURBOPROP, ROC MAP
+%                  FULL MATLAB SCRIPT FOR GRAPHICS
+% ========================================================================
 
 clc; clear; close all;
-fprintf('=== TAKEOFF & CLIMB ADVANCED (wind, turboprop, ISA, FAR checks) ===\n\n');
+fprintf("\n=== ADVANCED FLIGHT PERFORMANCE MODEL ===\n\n");
 
-%% ------------------- INPUTS (usuário) -------------------
-MTOW = input('MTOW [kg] (ex: 6000): ');
-W0 = input('Peso de referência [kg] (ex: 5000): ');
-S   = input('Área da asa S [m^2] (ex: 16.2): ');
-c_mac = input('MAC [m] (para Re) (ex: 1.5): ');
-CD0 = input('CD0 (ex: 0.025): ');
-k   = input('k (induced drag factor) (ex: 0.045): ');
-CLmax_takeoff = input('CL_{max,TO} (com flaps) (ex: 2.0): ');
-CLmax_clean = input('CL_{max,clean} (ex: 1.6): ');
-n_engines = input('Número de motores (ex: 2): ');
+%% ========================================================================
+%%                         USER INPUTS
+%% ========================================================================
 
-% Motor / propulsor (turboprop)
-T_static_SL = input('Tração estática (soma motores) ao nível do mar [N] (ex: 5000): ');
-% coeficientes para queda de tracao: T = T0 * (rho/rho0)^alpha * (1 - beta*(V/Vref))
-alpha_thrust = input('Expoente de densidade para empuxo (turboprop) (ex: 1.0): ');
-beta_speed = input('Coef velocidade redução empuxo (ex: 0.02): ');
-Vref_thrust = input('Vref para redução de traçao [m/s] (ex: 200): ');
+MTOW = input('MTOW [kg]: ');
+W_ref = input('Peso inicial de referência [kg]: ');
+S = input('Área da asa S [m²]: ');
+c_mac = input('Corda média (MAC) [m]: ');
+CD0 = input('CD0: ');
+k = input('k (fator de arrasto induzido): ');
+CLmax_TO = input('CLmax de decolagem: ');
+CLmax_clean = input('CLmax limpo: ');
+n_eng = input('Número de motores: ');
 
-% Atmosfera e análise
-alt_vec = input('Vetor de altitudes [m] (ex: [0 1000 2000 4000]): ');
-wind_head_vec = input('Vetor de headwind (positivo = headwind, negativo = tailwind) [m/s] (ex: [0 5 10 -5]): ');
-rho0 = 1.225; T0 = 288.15; p0 = 101325; R = 287; g = 9.81;
+%% Turboprop
+T0_SL = input('Tração total ao nível do mar (N): ');
+alpha_T = input('Expoente de densidade para turboprop (ex: 1.0): ');
+beta_speed = input('Coef. redução com velocidade (ex: 0.02): ');
+Vref_T = input('Velocidade de referência para empuxo (ex: 200 m/s): ');
 
-% Velocidade de análise
-Vmin = input('Velocidade mínima de análise [m/s] (ex: 20): ');
-Vmax = input('Velocidade máxima de análise [m/s] (ex: 200): ');
+%% Atmosfera e análise
+alt_vec = input('Altitudes de análise (ex: [0 1000 2000 4000]): ');
+wind_vec = input('Headwind/Tailwind [m/s], positivo=headwind (ex: [0 5 10 -5]): ');
+
+Vmin = input('Velocidade mínima [m/s]: ');
+Vmax = input('Velocidade máxima [m/s]: ');
 NV = 400;
 V = linspace(Vmin, Vmax, NV);
 
-% Obstáculo de decolagem
-h_obst = input('Altura do obstáculo a superar [m] (ex: 15): ');
+h_obst = input('Altura do obstáculo (m): ');
+nW = input('Número de pesos até MTOW: ');
 
-% Avançado: faixa de pesos até MTOW
-nW = input('Número de pontos de peso até MTOW (ex: 6): ');
-W_vec = linspace(W0*g, MTOW*g, nW); % Newtons
+%% ========================================================================
+%%                   CONSTANTES E MICROFUNÇÕES
+%% ========================================================================
+g = 9.81;
+rho0 = 1.225;
+T0 = 288.15;
+p0 = 101325;
+R = 287;
 
-%% ------------------ Funções auxiliares ISA ------------------
-isa = @(alt) isa_precalc(alt); % returns struct with rho,T,p,a (m/s)
+%% Atmosfera ISA
+isa = @(h) isa_calc(h);
 
-%% ------------------ Regulatory thresholds (typical FAR-25) -----------
-% FAR-25 typical minima (All-engines-operating at V2): two-engine 2.4%
-% and OEI minima around 1.2% (these are applied as typical certification rules).
-% Sources: 14 CFR Part 25, 14 CFR Part 23 for guidance. See references. :contentReference[oaicite:2]{index=2}
-far25_AEO_min_two_engine = 0.024; % 2.4% (fraction)
-far25_OEI_min = 0.012;            % 1.2% (fraction) - typical reference point
-% We will check gradient (%) = ROC/V * 100 and compare
+%% Sutherland (viscosidade)
+mu_suth = @(T) 1.716e-5 * (T/273.15)^(3/2) * (273.15+110.4)/(T+110.4);
 
-%% ------------------ Preallocate results ------------------
-ROC_map = zeros(length(alt_vec), length(W_vec)); % peak ROC (m/s) per alt,weight
-Vroc_map = zeros(size(ROC_map));                % V at which peak ROC occurs
-Dist_takeoff_map = zeros(size(ROC_map));        % total TO distance estimate
+%% ========================================================================
+%%                   MATRIZES DE RESULTADOS
+%% ========================================================================
+W_vec = linspace(W_ref*g, MTOW*g, nW);
 
-%% ------------------ Loop altitudes and weights ------------------
+ROC_map = zeros(length(alt_vec), length(W_vec));
+Vroc_map = zeros(size(ROC_map));
+Takeoff_map = zeros(size(ROC_map));
+
+%% ========================================================================
+%%                 LOOP PRINCIPAL: ALTITUDE × PESO
+%% ========================================================================
+
 for ia = 1:length(alt_vec)
     alt = alt_vec(ia);
-    atm = isa(alt);
-    rho = atm.rho; a = atm.a; T_atm = atm.T;
-    % Reynolds viscosity (Sutherland) approx for info
-    mu = sutherland_mu(T_atm);
-    
+    A = isa(alt);
+    rho = A.rho;
+
     for iw = 1:length(W_vec)
-        W = W_vec(iw); % Newtons (weight)
+        W = W_vec(iw);
         m = W/g;
-        
-        % For each wind case, compute takeoff run and ROC curves, store best/worst as needed
-        % Here we aggregate for each headwind value: compute average/takeoff distance per wind
-        % but primary maps (ROC_map) consider no wind to be consistent with certification,
-        % we will produce separate plots for wind effects later.
-        
-        % CL required curve (level flight)
-        q = 0.5 * rho .* V.^2;
-        CL_req = W ./ (q .* S);
+
+        %% ------------------ AERODINÂMICA ------------------
+        q = 0.5*rho*V.^2;
+        CL_req = W ./ (q*S);
         CD = CD0 + k .* CL_req.^2;
-        D = CD .* q .* S;
-        
-        % Thrust model for turboprop (user provided)
-        T_avail = T_static_SL * (rho/rho0)^alpha_thrust .* (1 - beta_speed*(V./Vref_thrust));
-        T_avail(T_avail < 0) = 0;
-        
-        % Power and ROC
-        P_req = D .* V;
-        P_av = T_avail .* V;
-        ROC = (P_av - P_req) ./ W; % m/s
-        % Replace negative with zero (no climb possible)
-        ROC(ROC < 0) = 0;
-        
-        % Peak ROC and corresponding V
-        [ROC_peak, idxroc] = max(ROC);
-        Vroc_map(ia, iw) = V(idxroc);
+        D = CD.*q.*S;
+
+        %% ------------------ TURBOPROP ------------------
+        T = T0_SL*(rho/rho0)^alpha_T .* (1 - beta_speed*(V./Vref_T));
+        T(T<0)=0;
+
+        %% ------------------ POTÊNCIA E ROC ------------------
+        P_req = D.*V;
+        P_av = T.*V;
+        ROC = (P_av - P_req)./W;
+        ROC(ROC<0)=0;
+
+        [ROC_peak, idx] = max(ROC);
         ROC_map(ia, iw) = ROC_peak;
-        
-        % ----- Takeoff performance (ground roll + climb to obstacle) -----
-        % Stall and Vrot
-        V_stall = sqrt((2*W)/(rho*S*CLmax_takeoff));
-        V_rot = 1.2 * V_stall;
-        % ground roll integration: simple model with average acceleration along speed
-        V_to = linspace(0, V_rot, 300);
-        q_to = 0.5 * rho .* V_to.^2;
-        CL_to = 0.9 * CLmax_takeoff;
-        CD_to = CD0 + k .* (CL_to^2);
-        D_to = CD_to .* q_to .* S;
-        L_to = CL_to .* q_to .* S;
-        T_to = T_static_SL * (rho/rho0)^alpha_thrust .* (1 - beta_speed*(V_to./Vref_thrust));
-        mu_r = 0.03; % rolling friction; could be input
-        a_to = (T_to - D_to - mu_r*(W - L_to)) ./ m; % m/s^2
-        a_to(a_to < 0.1) = 0.1; % floor small accel to avoid division by zero
-        dx = cumtrapz(V_to ./ a_to); % approximate
+        Vroc_map(ia, iw) = V(idx);
+
+        %% ------------------ DECOLAGEM ------------------
+        CL_TO = 0.9*CLmax_TO;
+        Vstall_TO = sqrt(2*W/(rho*S*CLmax_TO));
+        Vrot = 1.2*Vstall_TO;
+        V_to = linspace(0, Vrot, 300);
+
+        q_to = 0.5*rho*V_to.^2;
+        CD_to = CD0 + k*CL_TO^2;
+        D_to = CD_to.*q_to.*S;
+        L_to = CL_TO.*q_to.*S;
+
+        T_to = T0_SL*(rho/rho0)^alpha_T .* (1 - beta_speed*(V_to./Vref_T));
+
+        mu_r = 0.03;
+        a_to = (T_to - D_to - mu_r*(W-L_to))/m;
+        a_to(a_to<0.1)=0.1;
+
+        dx = cumtrapz(V_to./a_to);
         ground_run = dx(end);
-        % climb to obstacle using ROC at V_rot (interpolate)
-        ROC_at_Vrot = interp1(V, ROC, V_rot, 'linear', 0);
-        if ROC_at_Vrot <= 0
+
+        ROC_vrot = interp1(V, ROC, Vrot, "linear", 0);
+        if ROC_vrot<=0
             climb_dist = Inf;
         else
-            t_climb = h_obst / ROC_at_Vrot;
-            climb_dist = V_rot * t_climb;
+            climb_dist = Vrot*(h_obst/ROC_vrot);
         end
-        Dist_takeoff_map(ia, iw) = ground_run + climb_dist;
+
+        Takeoff_map(ia, iw) = ground_run + climb_dist;
+
     end
 end
 
-%% ------------------ Plots: ROC map (Altitude x Weight) ------------------
-figure('Name','ROC map (Altitude x Weight)');
-[Wgrid, Agrid] = meshgrid(W_vec./g, alt_vec); % kg on x-axis for readability
-surf(Wgrid, Agrid, ROC_map, 'EdgeColor', 'none');
-xlabel('Weight [kg]'); ylabel('Altitude [m]'); zlabel('Peak ROC [m/s]');
-title('Mapa ROC (Altitude × Peso)'); colorbar; view(45,30);
+%% ========================================================================
+%%                    GRÁFICO 1 — MAPA ROC(ALT, PESO)
+%% ========================================================================
+figure; surf(W_vec/g, alt_vec, ROC_map, 'EdgeColor','none');
+xlabel("Peso [kg]"); ylabel("Altitude [m]"); zlabel("ROC [m/s]");
+title("Mapa ROC (Altitude × Peso)"); colorbar; view(40,30);
 
-% Contour for visualization
-figure('Name','ROC contour');
-contourf(Wgrid, Agrid, ROC_map, 20); colorbar;
-xlabel('Weight [kg]'); ylabel('Altitude [m]'); title('ROC contour (m/s)');
+%% ========================================================================
+%%                    GRÁFICO 2 — CONTORNO ROC
+%% ========================================================================
+figure; contourf(W_vec/g, alt_vec, ROC_map, 20, 'LineColor','none');
+xlabel("Peso [kg]"); ylabel("Altitude [m]");
+title("Contorno ROC (m/s)"); colorbar;
 
-%% ------------------ Plots: ROC vs V for selected weights/alts ------------------
-figure('Name','ROC vs V examples'); hold on; grid on;
-colors = lines(length(W_vec));
+%% ========================================================================
+%%          GRÁFICO 3 — ROC vs velocidade (para pesos principais)
+%% ========================================================================
+figure; hold on; grid on;
 for iw = 1:length(W_vec)
     W = W_vec(iw);
-    % pick ISA sea-level for example or first altitude
-    atm = isa(alt_vec(1));
-    rho = atm.rho;
-    q = 0.5 * rho .* V.^2;
-    CL_req = W ./ (q .* S);
-    CD = CD0 + k .* CL_req.^2;
-    D = CD .* q .* S;
-    T_avail = T_static_SL * (rho/rho0)^alpha_thrust .* (1 - beta_speed*(V./Vref_thrust));
-    P_req = D .* V; P_av = T_avail .* V;
-    ROC = (P_av - P_req) ./ W;
+    A = isa(alt_vec(1));
+    rho = A.rho;
+
+    q = 0.5*rho*V.^2;
+    CL_req = W./(q*S);
+    CD = CD0 + k.*CL_req.^2;
+    D = CD.*q.*S;
+    T = T0_SL*(rho/rho0)^alpha_T .* (1 - beta_speed*(V./Vref_T));
+    ROC = (T.*V - D.*V)./W;
     ROC(ROC<0)=0;
-    plot(V, ROC, 'Color', colors(iw,:), 'LineWidth', 1.6, ...
-         'DisplayName', sprintf('W=%.0f kg', W/g));
-end
-xlabel('Velocidade [m/s]'); ylabel('ROC [m/s]');
-title('ROC vs V (exemplo, alt=first)'); legend('Location','best');
 
-%% ------------------ Wind effects on takeoff distance ------------------
-% For a selected altitude (sea level) calculate ground run vs headwind for a given weight set
+    plot(V, ROC, "LineWidth",1.6, ...
+        "DisplayName",sprintf("W = %.0f kg", W/g));
+end
+xlabel("Velocidade [m/s]"); ylabel("ROC [m/s]");
+title("Razão de Subida vs Velocidade"); legend;
+
+%% ========================================================================
+%%           GRÁFICO 4 — Efeito do vento na decolagem
+%% ========================================================================
 alt0 = alt_vec(1);
-atm0 = isa(alt0); rho0_local = atm0.rho;
-W_example = W_vec(end); % typically MTOW
-V_stall_ex = sqrt((2*W_example)/(rho0_local*S*CLmax_takeoff));
-V_rot_ex = 1.2*V_stall_ex;
-head = wind_head_vec;
-Dist_vs_wind = zeros(size(head));
-for ih = 1:length(head)
-    hw = head(ih);
-    % ground roll: effective groundspeed reduction by headwind reduces required distance.
-    % approximate: replace V_to_ground = V_to - hw (if positive)
-    V_to = linspace(0, V_rot_ex, 300);
-    V_ground = max(V_to - hw, 0.1);
-    q_to = 0.5 * rho0_local .* V_to.^2;
-    CL_to = 0.9 * CLmax_takeoff;
-    CD_to = CD0 + k*(CL_to^2);
-    D_to = CD_to .* q_to .* S;
-    L_to = CL_to .* q_to .* S;
-    T_to = T_static_SL * (rho0/rho0)^alpha_thrust .* (1 - beta_speed*(V_to./Vref_thrust));
-    a_to = (T_to - D_to - mu_r*(W_example - L_to)) ./ (W_example/g);
+A0 = isa(alt0);
+rho0 = A0.rho;
+
+Wex = max(W_vec);
+Vstall_TO = sqrt(2*Wex/(rho0*S*CLmax_TO));
+Vrot = 1.2*Vstall_TO;
+Dist_vs_wind = zeros(size(wind_vec));
+
+for ih = 1:length(wind_vec)
+    hw = wind_vec(ih);
+
+    V_to = linspace(0, Vrot, 300);
+    Vground = max(V_to - hw, 0.1);
+
+    q_to = 0.5*rho0*V_to.^2;
+    CD_to = CD0 + k*(0.9*CLmax_TO)^2;
+    D_to = CD_to.*q_to.*S;
+    L_to = 0.9*CLmax_TO.*q_to.*S;
+
+    T_to = T0_SL*(rho0/rho0)^alpha_T .* (1 - beta_speed*(V_to./Vref_T));
+    a_to = (T_to - D_to - 0.03*(Wex - L_to)) / (Wex/g);
     a_to(a_to<0.1)=0.1;
-    dx = cumtrapz(V_ground ./ a_to);
-    ground_run = dx(end);
-    ROC_at_Vrot = interp1(V, ( (T_static_SL*(rho0_local/rho0)^alpha_thrust .* (1 - beta_speed*(V./Vref_thrust))).*V - (CD0 + k*( (W_example./(0.5*rho0_local.*V.^2.*S)).^2 )).*0.5*rho0_local.*V.^2.*S .* V ) ./ W_example , V_rot_ex,'linear',0);
-    if ROC_at_Vrot <= 0
-        climb_dist = Inf;
-    else
-        climb_dist = V_rot_ex * (h_obst / ROC_at_Vrot);
-    end
-    Dist_vs_wind(ih) = ground_run + climb_dist;
+
+    dx = cumtrapz(Vground./a_to);
+    ground = dx(end);
+
+    % ROC to obstacle
+    q = 0.5*rho0*V.^2;
+    CLr = Wex./(q*S);
+    CDr = CD0 + k.*CLr.^2;
+    Dr = CDr.*q*S;
+    Tr = T0_SL*(rho0/rho0)^alpha_T .* (1 - beta_speed*(V./Vref_T));
+    ROC = (Tr.*V - Dr.*V)./Wex; ROC(ROC<0)=0;
+
+    ROC_vrot = interp1(V, ROC, Vrot, "linear", 0);
+    climb = Vrot*(h_obst/ROC_vrot);
+
+    Dist_vs_wind(ih) = ground + climb;
 end
 
-figure('Name','Takeoff distance vs Headwind (example W)');
-plot(head, Dist_vs_wind, '-o','LineWidth',1.8);
-xlabel('Headwind [m/s] (positive=headwind)'); ylabel('Distância de decolagem [m]');
-title(sprintf('Efeito do vento na decolagem (W=%.0f kg, alt=%.0f m)', W_example/g, alt0));
+figure; plot(wind_vec, Dist_vs_wind, "-o","LineWidth",2);
+xlabel("Vento de proa (+) / cauda (-) [m/s]");
+ylabel("Distância de decolagem [m]");
+title("Efeito do vento na distância de decolagem");
+grid on;
 
-%% ------------------ FAR checks for gradients ------------------
-% compute gradients (fraction) at V2 and at some V_FTO (approx) for each alt/weight
-fprintf('\n--- FAR checks (typical thresholds) ---\n');
-for ia=1:length(alt_vec)
-    alt = alt_vec(ia); atm = isa(alt); rho = atm.rho; a = atm.a;
-    for iw=1:length(W_vec)
-        W = W_vec(iw);
-        % choose V2 approx = 1.2 * Vstall (common approximation); V_FTO ~ 1.13*Vstall (approx)
-        Vstall = sqrt((2*W)/(rho*S*CLmax_takeoff));
-        V2 = 1.2*Vstall; V_FTO = 1.13*Vstall;
-        % compute ROC at those speeds
-        q = 0.5 * rho .* V.^2;
-        CL_req = W ./ (q .* S);
-        CD = CD0 + k .* CL_req.^2;
-        D = CD .* q .* S;
-        T_av = T_static_SL * (rho/rho0)^alpha_thrust .* (1 - beta_speed*(V./Vref_thrust));
-        P_req = D .* V; P_av = T_av .* V;
-        ROC_curve = (P_av - P_req) ./ W; ROC_curve(ROC_curve<0)=0;
-        ROC_V2 = interp1(V, ROC_curve, V2, 'linear', 0);
-        ROC_VFTO = interp1(V, ROC_curve, V_FTO, 'linear', 0);
-        grad_V2 = ROC_V2 / V2; grad_VFTO = ROC_VFTO / V_FTO;
-        % compare to FAR-25 thresholds (AEO and OEI typical minima)
-        % AEO: require >= far25_AEO_min_two_engine for two-engine at V2
-        meets_AEO = (grad_V2 >= far25_AEO_min_two_engine);
-        meets_OEI = (grad_VFTO >= far25_OEI_min);
-        fprintf('Alt %.0f m, W=%.0f kg: grad_V2=%.3f%% (meet AEO? %d), grad_VFTO=%.3f%% (meet OEI? %d)\n', ...
-            alt, W/g, grad_V2*100, meets_AEO, grad_VFTO*100, meets_OEI);
-    end
-end
+%% ========================================================================
+%%          GRÁFICO 5 — Polar completa CD(CL)
+%% ========================================================================
+CL_list = linspace(0, CLmax_clean, 200);
+CD_list = CD0 + k.*CL_list.^2;
 
-fprintf('\nFinished. Outputs: ROC_map (m/s), Vroc_map, Dist_takeoff_map (m). Modify parameters as needed.\n');
+figure;
+plot(CL_list, CD_list, 'LineWidth',2);
+xlabel("CL"); ylabel("CD");
+title("Polar aerodinâmica CL–CD (limpo)");
+grid on;
 
-%% ------------------ Helper functions ------------------
-function atm = isa_precalc(alt)
-    % returns struct with rho, T, p, a
-    % standard ISA up to stratosphere (simple piecewise)
-    g = 9.80665; R = 287.05287;
-    if alt < 11000
-        T0 = 288.15; L = 0.0065; p0 = 101325;
-        T = T0 - L*alt;
-        p = p0 * (T/T0)^(g/(R*L));
-    else
-        % isothermal layer approx between 11 km and 20 km
-        T = 216.65;
-        p11 = 22632.06; % pressure at 11 km
-        p = p11 * exp(-g*(alt-11000)/(R*T));
-    end
-    rho = p / (R * T);
-    a = sqrt(1.4 * R * T);
-    atm.rho = rho; atm.T = T; atm.p = p; atm.a = a;
-end
 
-function mu = sutherland_mu(T)
-    % Sutherland law approximate dynamic viscosity for air
-    % Inputs: temperature T [K]
-    mu0 = 1.716e-5; T0s = 273.15; C = 110.4;
-    mu = mu0 * (T / T0s)^(3/2) * (T0s + C) / (T + C);
 end
