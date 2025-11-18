@@ -1,1 +1,299 @@
+% cg_envelope_serviceceiling.m
+% Cálculo CG (peso & balanceamento), envelope de voo e altitude de cruzeiro (service ceiling)
+% Usa: polar simples C_D = CD0 + k CL^2
+% Service ceiling: altitude onde max(ROC) <= 100 ft/min (~0.508 m/s) (definição prática).
+% Referências: Roskam (Airplane Design) e textos de performance (service ceiling definition). :contentReference[oaicite:2]{index=2}
+
+clc; clear; close all;
+fprintf('=== CG, Envelope e Service Ceiling (aeromodelos) ===\n\n');
+
+%% ----------------------------
+%% 1) INPUTS: WEIGHT & BALANCE
+%% ----------------------------
+fprintf('--- Dados de peso e balanceamento ---\n');
+datum = input('Datum (origem braço) em [m] (ex: 0): ');
+n_items = input('Número de componentes (bateria, motor, estrutura, etc): ');
+
+items = table;
+items.Name = strings(n_items,1);
+items.Weight_kg = zeros(n_items,1);
+items.Arm_m = zeros(n_items,1);
+
+for i=1:n_items
+    items.Name(i) = input(sprintf('Nome item %d (string): ', i),'s');
+    items.Weight_kg(i) = input(sprintf('Peso do item %d [kg]: ', i));
+    items.Arm_m(i) = input(sprintf('Braço do item %d em relação ao datum [m]: ', i));
+end
+
+% empty weight / fixed items optional
+W_empty_kg = input('Peso vazio (estrutura) [kg] (pressione Enter se 0): ');
+if isempty(W_empty_kg), W_empty_kg = 0; end
+arm_empty = input('Braço do peso vazio [m]: ');
+if isempty(arm_empty), arm_empty = 0; end
+
+% forward/rear CG limits (porcentagem do MAC)
+LE_MAC = input('Local do leading edge do MAC em relação ao datum [m] (LE_MAC): ');
+MAC = input('Mean Aerodynamic Chord (MAC) [m]: ');
+CG_limit_forward_pctMAC = input('Limite forward CG [%MAC] (ex: 15): '); % percent
+CG_limit_aft_pctMAC = input('Limite aft CG [%MAC] (ex: 35): ');       % percent
+
+%% ----------------------------
+%% 2) AERODINÂMICA E PROPULSÃO
+%% ----------------------------
+fprintf('\n--- Dados aerodinâmicos / motor ---\n');
+S = input('Área da asa S [m^2]: ');
+CD0 = input('CD0 (arrasto parasita): ');
+k = input('k (induced drag factor): ');
+CLmax_clean = input('CLmax (limpo): ');
+CLmax_TO = input('CLmax (decolagem com flaps) [opcional, Enter se igual ao limpo]: ');
+if isempty(CLmax_TO), CLmax_TO = CLmax_clean; end
+
+% Motor / propulsor (aeromodelos: pot. elétrica ou motor glow)
+P_engine_W = input('Potência do motor [W] (contínua disponível na hélice): ');
+eta_prop = input('Eficiência propulsora/propeller (0-1) [ex:0.7]: ');
+% como potência varia com altitude: P_av ~ (rho/rho0)^alpha_P
+alpha_P = input('Expoente de correção de potência com rho (ex: 1 para turboprop/prop, 0 para ideal): ');
+
+% Velocidade de cruzeiro (segundo Roskam: informe o Vcruise desejado)
+V_cruise = input('Velocidade de cruzeiro [m/s] (use valor de Roskam para escala): ');
+
+% Vne (opcional) e fator sobre Vstall
+Vne = input('Vne [m/s] (pressione Enter se desejar Vne = 1.5*Vcruise): ');
+if isempty(Vne), Vne = 1.5*V_cruise; end
+
+%% ----------------------------
+%% 3) ATMOSFERA ISA
+%% ----------------------------
+fprintf('\n--- Atmosfera ISA & malha de altitude ---\n');
+rho0 = 1.225; T0 = 288.15; p0 = 101325; R = 287.05287; g = 9.81;
+isa = @(h) isa_calc(h); % function below
+
+h_max_search = input('Altitude máxima para varredura [m] (ex: 10000): ');
+dh = input('Passo de altitude [m] (ex: 100): ');
+h_vec = 0:dh:h_max_search;
+
+%% ----------------------------
+%% 4) COMPUTE WEIGHT & CG
+%% ----------------------------
+% Totais
+total_payload_kg = sum(items.Weight_kg) + W_empty_kg;
+moments = items.Weight_kg .* items.Arm_m;
+moment_empty = W_empty_kg * arm_empty;
+total_moment = sum(moments) + moment_empty;
+W_total_kg = total_payload_kg;
+W_total_N = W_total_kg * g;
+CG_m = total_moment / total_payload_kg;  % metres from datum
+
+% convert CG to %MAC
+CG_LE_to_CG = CG_m - LE_MAC;   % distance from leading edge of MAC
+CG_pctMAC = (CG_LE_to_CG / MAC) * 100;
+
+% CG limits in absolute meters
+CG_forward_m = LE_MAC + (CG_limit_forward_pctMAC/100)*MAC;
+CG_aft_m = LE_MAC + (CG_limit_aft_pctMAC/100)*MAC;
+
+% Summary
+fprintf('\n--- Weight & Balance Summary ---\n');
+fprintf('Total weight = %.2f kg (%.2f N)\n', W_total_kg, W_total_N);
+fprintf('Total moment = %.3f kg*m\n', total_moment);
+fprintf('CG position = %.3f m from datum (%.2f %%MAC)\n', CG_m, CG_pctMAC);
+fprintf('CG limits: forward = %.3f m (%.1f%%MAC), aft = %.3f m (%.1f%%MAC)\n', ...
+    CG_forward_m, CG_limit_forward_pctMAC, CG_aft_m, CG_limit_aft_pctMAC);
+
+if CG_m < CG_forward_m
+    fprintf('** ALERTA: CG está ANTES do limite forward (frente) — POTENCIAL INSTABILIDADE **\n');
+elseif CG_m > CG_aft_m
+    fprintf('** ALERTA: CG está ALÉM do limite aft (traseiro) — POTENCIAL INESTABILIDADE / STALL **\n');
+else
+    fprintf('CG dentro dos limites estabelecidos.\n');
+end
+
+%% ----------------------------
+%% 5) ENVELOPE DE VOO BASICO
+%% ----------------------------
+fprintf('\n--- Envelope de Voo ---\n');
+% compute V_stall at sea level / at various altitudes
+V = linspace(5, Vne, 400); % velocity grid
+Vstall0 = sqrt((2 * W_total_N) / (rho0 * S * CLmax_clean));
+Va = Vstall0 * sqrt( (CG_limit_aft_pctMAC/100) ); % rough approximate — user can ignore
+fprintf('V_stall (sea level, clean) = %.2f m/s\n', Vstall0);
+fprintf('V_cruise (input) = %.2f m/s\n', V_cruise);
+fprintf('V_ne (Vne) = %.2f m/s\n', Vne);
+fprintf('Velocidade de manobra estimada (Va) ≈ %.2f m/s (aprox.)\n', Va);
+
+% compute CL required vs V at sea level
+q0 = 0.5 * rho0 .* V.^2;
+CL_req = W_total_N ./ (q0 .* S);
+CD = CD0 + k .* CL_req.^2;
+D = CD .* q0 .* S;
+
+% power required and available at sea level (P_avail = eta * P_engine)
+P_avail_SL = eta_prop * P_engine_W;   % watts available at sea level
+P_req = D .* V;                       % watts required
+% note: P_avail that prop delivers is limited by eta * P_engine; for propeller thrust model use T = eta*P/V
+
+% find maximum speed where P_avail >= P_req at sea level => approximate V_max_possible
+idx_ok = find(P_avail_SL >= P_req);
+if isempty(idx_ok)
+    V_max_possible = NaN;
+else
+    V_max_possible = V(max(idx_ok));
+end
+fprintf('V_max (onde P_avail >= P_req) ao nível do mar ≈ %.2f m/s (se NaN => potência insuficiente)\n', V_max_possible);
+
+%% ----------------------------
+%% 6) SERVICE CEILING (varredura por altitude)
+%% ----------------------------
+fprintf('\n--- Calculando Service Ceiling ---\n');
+% service ceiling criterion: max(ROC) <= 100 ft/min ≈ 0.508 m/s
+service_ceiling_threshold = 0.508; % m/s
+absolute_ceiling_threshold = 0;    % ROC = 0
+
+ROC_peak_vs_h = nan(size(h_vec));
+Vroc_vs_h = nan(size(h_vec));
+for ih = 1:length(h_vec)
+    h = h_vec(ih);
+    A = isa(h);
+    rho = A.rho;
+    % correct available power with rho exponent
+    P_avail = eta_prop * P_engine_W * (rho / rho0)^alpha_P;
+    % compute ROC(V) on velocity grid for this altitude
+    q = 0.5 * rho .* V.^2;
+    CL_req_h = W_total_N ./ (q .* S);
+    CD_h = CD0 + k .* CL_req_h.^2;
+    D_h = CD_h .* q .* S;
+    P_req_h = D_h .* V;
+    ROC_h = (P_avail - P_req_h) ./ W_total_N; % m/s
+    % for small V values P_req small -> limit but physically P_avail/V gives thrust etc.
+    ROC_h(ROC_h< -1) = -1; % keep negative values
+    [ROC_peak, idx] = max(ROC_h);
+    ROC_peak_vs_h(ih) = ROC_peak;
+    Vroc_vs_h(ih) = V(idx);
+end
+
+% find service ceiling (alt where ROC_peak <= threshold)
+service_idx = find(ROC_peak_vs_h <= service_ceiling_threshold, 1, 'first');
+if isempty(service_idx)
+    service_ceiling = NaN;
+    fprintf('Service ceiling not reached within altitude scan up to %g m.\n', h_max_search);
+else
+    service_ceiling = h_vec(service_idx);
+    fprintf('Service ceiling (ROC_peak <= 100 ft/min) ≈ %.1f m\n', service_ceiling);
+end
+
+% find absolute ceiling (ROC_peak <= 0)
+abs_idx = find(ROC_peak_vs_h <= absolute_ceiling_threshold, 1, 'first');
+if isempty(abs_idx)
+    absolute_ceiling = NaN;
+else
+    absolute_ceiling = h_vec(abs_idx);
+    fprintf('Absolute ceiling (ROC_peak <= 0) ≈ %.1f m\n', absolute_ceiling);
+end
+
+%% ----------------------------
+%% 7) PLOTS
+%% ----------------------------
+% 7.1 Weight & balance bar (weights and arms)
+figure('Name','Weight & Balance');
+barh([items.Weight_kg; W_empty_kg]);
+yticks(1:(n_items+1));
+yticklabels([items.Name; "Empty Weight"]);
+xlabel('Peso [kg]');
+title('Componentes e pesos (Balanceamento)');
+grid on;
+
+% 7.2 CG on MAC plot
+figure('Name','CG %MAC');
+hold on; grid on;
+patch_x = [0 100 100 0]; patch_y = [0 0 1 1]; % not used, just axes
+% show MAC (0-100% on horizontal)
+xlim([0 100]); ylim([0 1]);
+plot(CG_pctMAC, 0.5, 'ro', 'MarkerSize',12, 'LineWidth',2);
+plot([CG_limit_forward_pctMAC CG_limit_aft_pctMAC], [0.5 0.5], 'k-', 'LineWidth',6);
+text(CG_pctMAC+1, 0.55, sprintf('CG = %.2f %%MAC', CG_pctMAC));
+title('Posição do CG em %MAC (linha preta = zona permitida)');
+xlabel('% MAC'); yticks([]);
+
+% 7.3 Polar CL-CD at sea level
+figure('Name','Polar CL-CD');
+CLlist = linspace(0, CLmax_clean*1.05, 200);
+CDlist = CD0 + k.*CLlist.^2;
+plot(CLlist, CDlist, 'LineWidth', 2);
+xlabel('C_L'); ylabel('C_D'); title('Polar de Arrasto (modelo quadrático)'); grid on;
+
+% 7.4 Envelope: V vs CL_required and Vstall markers
+figure('Name','Envelope V vs CL_req');
+plot(V, CL_req, 'LineWidth', 1.6); hold on; grid on;
+xline(Vstall0,'r--','V_{stall}');
+xline(V_cruise,'g--','V_{cruise}');
+xline(Vne,'k--','V_{ne}');
+xlabel('Velocidade [m/s]'); ylabel('C_L requerido'); title('C_L requerido vs Velocidade');
+legend('C_L_{req}','V_{stall}','V_{cruise}','V_{ne}','Location','best');
+
+% 7.5 ROC peak vs altitude (map)
+figure('Name','ROC_peak vs Altitude');
+plot(h_vec, ROC_peak_vs_h, '-o','LineWidth',1.6);
+xlabel('Altitude [m]'); ylabel('Peak ROC [m/s]'); grid on;
+yline(service_ceiling_threshold,'r--','Service threshold (100 ft/min)');
+if ~isnan(service_ceiling)
+    xline(service_ceiling,'g--',sprintf('Service ceiling = %.0f m', service_ceiling));
+end
+if ~isnan(absolute_ceiling)
+    xline(absolute_ceiling,'k--',sprintf('Absolute ceiling = %.0f m', absolute_ceiling));
+end
+title('Máxima razão de subida (varrida em V) vs Altitude');
+
+% 7.6 Contour ROC versus altitude and velocity (optional heavy plot)
+[H_mesh, V_mesh] = meshgrid(h_vec, V);
+ROC_mesh = zeros(size(V_mesh));
+for ii = 1:numel(V_mesh)
+    htmp = H_mesh(ii); vtmp = V_mesh(ii);
+    atm = isa(htmp); rho = atm.rho;
+    P_av = eta_prop * P_engine_W * (rho/rho0)^alpha_P;
+    qtmp = 0.5 * rho * vtmp^2;
+    CLtmp = W_total_N / (qtmp * S);
+    CDtmp = CD0 + k * CLtmp^2;
+    Dtmp = CDtmp * qtmp * S;
+    P_req_tmp = Dtmp * vtmp;
+    ROC_mesh(ii) = (P_av - P_req_tmp) / W_total_N;
+end
+figure('Name','ROC contour (V x Alt)');
+contourf(H_mesh, V_mesh, ROC_mesh, 30); colorbar;
+xlabel('Altitude [m]'); ylabel('Velocidade [m/s]');
+title('Razão de subida (m/s) — função V × Altitude');
+
+%% ----------------------------
+%% 8) OUTPUT TABLES (console)
+%% ----------------------------
+fprintf('\n--- Resumo Final ---\n');
+fprintf('Total weight: %.2f kg\n', W_total_kg);
+fprintf('CG: %.3f m from datum -> %.2f %%MAC\n', CG_m, CG_pctMAC);
+fprintf('V_stall (SL) = %.2f m/s | V_cruise = %.2f m/s | V_ne = %.2f m/s\n', Vstall0, V_cruise, Vne);
+if ~isnan(service_ceiling)
+    fprintf('Service ceiling ≈ %.1f m (ROC_peak <= 100 ft/min)\n', service_ceiling);
+else
+    fprintf('Service ceiling not found up to %.1f m\n', h_max_search);
+end
+if ~isnan(absolute_ceiling)
+    fprintf('Absolute ceiling ≈ %.1f m (ROC_peak <= 0)\n', absolute_ceiling);
+end
+
+fprintf('\nConcluído. Ajuste parâmetros e rode novamente conforme necessário.\n');
+
+%% ----------------------------
+%% Helper: ISA
+%% ----------------------------
+function atm = isa_calc(h)
+    g = 9.80665; R = 287.05287;
+    if h <= 11000
+        T = 288.15 - 0.0065*h;
+        p = 101325 * (T/288.15)^(g/(R*0.0065));
+    else
+        T = 216.65;
+        p = 22632.06 * exp(-g*(h-11000)/(R*T));
+    end
+    rho = p/(R*T);
+    a = sqrt(1.4*R*T);
+    atm.rho = rho; atm.T = T; atm.p = p; atm.a = a;
+end
 
