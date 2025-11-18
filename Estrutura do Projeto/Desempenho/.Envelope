@@ -1,1 +1,137 @@
+%% ==========================================================
+%        ENVELOPE DE VOO COMPLETO (V–n DIAGRAM)
+%   Inclui: Inputs, ISA, Va, Vne, rajadas FAR, Mach, 3D opcional
+%   Autor: ChatGPT – Wendler version
+%% ==========================================================
+
+clc; clear; close all;
+
+disp('=== ENVELOPE DE VOO COMPLETO ===');
+disp('Insira os parâmetros da aeronave');
+disp(' ');
+
+%% ====================== INPUTS BÁSICOS =============================
+m = input('Massa da aeronave [kg]: ');
+S = input('Área da asa [m²]: ');
+CLmax = input('CLmax (coeficiente de sustentação máximo): ');
+n_pos_lim = input('Limite estrutural +g: ');
+n_neg_lim = input('Limite estrutural -g: ');
+
+alt = input('Altitude de operação [m] (ex: 0–12000): ');
+Vmax = input('Velocidade máxima para o gráfico [m/s] (ex: 180): ');
+Vne = input('Vne – velocidade nunca exceder [m/s]: ');
+
+Mach_lim = input('Limite de Mach (pressione Enter se desejar ignorar): ');
+if isempty(Mach_lim)
+    Mach_lim = inf;
+end
+
+usar_3D = input('Gerar envelope 3D (0 = não, 1 = sim): ');
+
+%% ====================== MODELO ISA =============================
+% Cálculo da densidade pela atmosfera padrão
+T0 = 288.15;          % K
+p0 = 101325;          % Pa
+L = 0.0065;           % lapse rate [K/m]
+R = 287;              % J/kg/K
+g = 9.81;
+
+if alt <= 11000
+    T = T0 - L*alt;
+    p = p0 * (T/T0)^(g/(R*L));
+else
+    % Camada isoterma simplificada para 11–20 km
+    T = 216.65;
+    p = 22632 * exp(-g*(alt-11000)/(R*T));
+end
+
+rho = p / (R*T);   % densidade do ar
+
+fprintf('\nDensidade do ar na altitude: %.3f kg/m³\n\n', rho);
+
+%% ====================== VARREDURA DE VELOCIDADE =============================
+V = linspace(5, Vmax, 600);
+W = m * g;
+
+%% ====================== FATOR DE CARGA AERODINÂMICO ==========================
+n_aero = 0.5 .* rho .* V.^2 .* S .* CLmax ./ W;
+
+%% ====================== VELOCIDADE DE ESTOL E DE MANOBRA ====================
+V_stall = sqrt((2*W) / (rho*S*CLmax));
+
+Va = V_stall * sqrt(n_pos_lim);     % Velocidade de manobra
+
+%% ====================== LIMITES ESTRUTURAIS ================================
+n_struct_pos = n_pos_lim * ones(size(V));
+n_struct_neg = n_neg_lim * ones(size(V));
+
+%% ====================== LIMITE DE MACH =====================================
+a = sqrt(1.4 * 287 * T);   % velocidade do som
+V_Mach = Mach_lim * a;
+
+%% ====================== RAJADAS (GUST ENVELOPE – FAR 23/25) =================
+% Modelo simplificado FAR:
+% Delta_n = (rho * V * Ude * S * CL_alpha) / (2*W)
+% Valores típicos:
+Ude = 15.24;        % rajada 50 ft/s em m/s
+CL_alpha = 5.5;     % [1/rad]
+CL_alpha = CL_alpha * (180/pi); % para 1/grau
+
+Delta_n = (rho .* V .* Ude .* S .* CL_alpha) ./ (2*W);
+
+n_gust_pos = 1 + Delta_n;
+n_gust_neg = 1 - Delta_n;
+
+%% ====================== PLOT 2D =============================
+figure; hold on; grid on;
+
+plot(V, n_aero, 'LineWidth', 2);
+plot(V, -n_aero, 'LineWidth', 2);
+
+plot(V, n_struct_pos, '--', 'LineWidth', 2);
+plot(V, n_struct_neg, '--', 'LineWidth', 2);
+
+plot(V, n_gust_pos, 'm--', 'LineWidth', 1.8);
+plot(V, n_gust_neg, 'm--', 'LineWidth', 1.8);
+
+xline(V_stall,'k--','LineWidth',1.5);
+xline(Va,'g--','LineWidth',1.5);
+xline(Vne,'r--','LineWidth',2);
+xline(V_Mach,'c--','LineWidth',1.8);
+
+xlabel('Velocidade [m/s]');
+ylabel('Fator de carga n');
+title('Envelope Completo de Voo (V–n Diagram)');
+legend('Limite aerodinâmico +',...
+       'Limite aerodinâmico -',...
+       'Limite estrutural +',...
+       'Limite estrutural -',...
+       'Rajada +',...
+       'Rajada -',...
+       'Stall',...
+       'Va (Manobra)',...
+       'Vne',...
+       'Limite de Mach',...
+       'Location','best');
+
+%% ====================== ENVELOPE 3D OPCIONAL =============================
+if usar_3D == 1
+    alt_vec = linspace(0, alt, 40);
+    V3 = linspace(5, Vmax, 200);
+    [Vmesh, Hmesh] = meshgrid(V3, alt_vec);
+
+    % densidade ISA para cada altitude
+    rhomesh = p0./(R*(T0 - L*Hmesh)) .* (1 - L.*Hmesh./T0).^(g/(R*L));
+
+    % cálculo n_max para cada altitude
+    n3D = 0.5 .* rhomesh .* Vmesh.^2 .* S .* CLmax ./ W;
+
+    figure;
+    surf(Vmesh, Hmesh, n3D,'EdgeColor','none'); 
+    colormap turbo; colorbar;
+    xlabel('Velocidade [m/s]');
+    ylabel('Altitude [m]');
+    zlabel('Fator de carga n');
+    title('Envelope 3D – Velocidade × Altitude × Fator de Carga');
+end
 
