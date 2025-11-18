@@ -11,7 +11,7 @@ fprintf('=== CG, Envelope e Service Ceiling (aeromodelos) ===\n\n');
 %% 1) INPUTS: WEIGHT & BALANCE
 %% ----------------------------
 fprintf('--- Dados de peso e balanceamento ---\n');
-datum = input('Datum (origem braço) em [m] (ex: 0): ');
+datum = input('Datum (origem braço) em [cm] (ex: 0): ');
 n_items = input('Número de componentes (bateria, motor, estrutura, etc): ');
 
 items = table;
@@ -33,7 +33,7 @@ if isempty(arm_empty), arm_empty = 0; end
 
 % forward/rear CG limits (porcentagem do MAC)
 LE_MAC = input('Local do leading edge do MAC em relação ao datum [m] (LE_MAC): ');
-MAC = input('Mean Aerodynamic Chord (MAC) [m]: ');
+MAC = input('Mean Aerodynamic Chord (MAC) [cm]: ');
 CG_limit_forward_pctMAC = input('Limite forward CG [%MAC] (ex: 15): '); % percent
 CG_limit_aft_pctMAC = input('Limite aft CG [%MAC] (ex: 35): ');       % percent
 
